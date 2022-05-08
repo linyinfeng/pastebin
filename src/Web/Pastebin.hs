@@ -30,17 +30,16 @@ import Data.Conduit
 import Data.Conduit.Combinators (mapM_E, repeatWhileM, vectorBuilder)
 import qualified Data.Conduit.Combinators as CC
 import qualified Data.Map as M
+import Data.String (fromString)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8)
 import qualified Data.Text.Lazy as TL
+import Network.HTTP.Types (HeaderName)
+import Network.HTTP.Types.Method
 import Network.HTTP.Types.Status
 import Network.Wai
-import Text.Printf
 import Web.Pastebin.Option
 import Web.Scotty.Trans
-import Network.HTTP.Types (HeaderName)
-import Data.String (fromString)
-import Network.HTTP.Types.Method
 
 data PastebinEnv = PastebinEnv
   { _pbOpts :: PastebinOptions,
@@ -148,14 +147,13 @@ deleteObject = do
   key <- liftAction $ param "key"
   void $ AWS.send env (S3.newDeleteObject (S3.BucketName bucket) (S3.ObjectKey (bucket <> "/" <> key)))
 
-
 serviceUrl :: PastebinOptions -> M.Map HeaderName B.ByteString -> T.Text
 serviceUrl opts reqHeaders = case M.lookup "X-Forwarded-Host" reqHeaders of
-              Just host ->
-                let protocol = maybe "https" decodeUtf8 (M.lookup "X-Forwarded-Proto" reqHeaders)
-                    portStr = maybe "" ((":" <>) . decodeUtf8) (M.lookup "X-Forwarded-Port" reqHeaders)
-                in  (protocol <> "://" <> decodeUtf8 host <> portStr)
-              Nothing -> "http://localhost:" <> fromString (show (opts ^. optPort))
+  Just host ->
+    let protocol = maybe "https" decodeUtf8 (M.lookup "X-Forwarded-Proto" reqHeaders)
+        portStr = maybe "" ((":" <>) . decodeUtf8) (M.lookup "X-Forwarded-Port" reqHeaders)
+     in (protocol <> "://" <> decodeUtf8 host <> portStr)
+  Nothing -> "http://localhost:" <> fromString (show (opts ^. optPort))
 
 createdUrl :: PastebinOptions -> M.Map HeaderName B.ByteString -> T.Text -> T.Text
 createdUrl opts reqHeaders key = serviceUrl opts reqHeaders <> "/" <> key

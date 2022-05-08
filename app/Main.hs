@@ -50,16 +50,21 @@ main = do
   runPastebinT (mapPastebinT (scottyT (opts ^. optPort) adapter) pastebin) env
   where
     serviceOverride opts =
-      Dual $ Endo $ AWS.setEndpoint
-                (not (opts ^. optEndpointNoSSL))
-                (fromString (opts ^. optEndpointHost))
-                (opts ^. optEndpointPort)
+      Dual $
+        Endo $
+          AWS.setEndpoint
+            (not (opts ^. optEndpointNoSSL))
+            (fromString (opts ^. optEndpointHost))
+            (opts ^. optEndpointPort)
 
 newtype RandT' g m a = RandT' {unRandT' :: RandT g m a}
   deriving (Functor, Applicative, Monad, MonadTrans, MonadIO, MonadRandom)
+
 instance MonadThrow m => MonadThrow (RandT' g m) where
   throwM = lift . throwM
+
 instance MonadCatch m => MonadCatch (RandT' g m) where
   catch (RandT' r) f = RandT' $ R.liftCatch catch r (unRandT' . f)
+
 evalRandT' :: Monad m => RandT' g m a -> g -> m a
 evalRandT' (RandT' r) = evalRandT r
