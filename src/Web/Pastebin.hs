@@ -135,7 +135,7 @@ putObject' key = do
       let s3BodyStream = readerToConduit readBody .| reChunk (fromIntegral AWS.defaultChunkSize)
       let s3ReqBody = AWS.unsafeChunkedBody AWS.defaultChunkSize len s3BodyStream
       let s3ReqBasic = S3.newPutObject (S3.BucketName bucket) (S3.ObjectKey (bucket <> "/" <> key)) s3ReqBody
-      let contentType = maybe defaultContentType decodeUtf8 (M.lookup "Content-Type" reqHeaders)
+      let contentType = convertContentType $ fmap decodeUtf8 (M.lookup "Content-Type" reqHeaders)
       let s3Req = s3ReqBasic & putObject_contentType ?~ contentType
       env <- asks (^. awsEnv)
       void $ AWS.send env s3Req
@@ -160,6 +160,11 @@ createdUrl opts reqHeaders key = serviceUrl opts reqHeaders <> "/" <> key
 
 defaultContentType :: T.Text
 defaultContentType = "application/octet-stream"
+
+convertContentType :: Maybe T.Text -> T.Text
+convertContentType Nothing = defaultContentType
+convertContentType (Just "application/x-www-form-urlencoded") = defaultContentType
+convertContentType (Just t) = t
 
 defaultContentTypeLazy :: TL.Text
 defaultContentTypeLazy = TL.fromStrict defaultContentType
