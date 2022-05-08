@@ -5,6 +5,9 @@
 with pkgs;
 
 mkShell {
+  inputsFrom = [
+    pastebin
+  ];
   packages = [
     cabal-install
     ghc
