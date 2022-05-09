@@ -1,45 +1,46 @@
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE TemplateHaskell #-}
 
 module Web.Pastebin
   ( pastebin,
-    PastebinT,
-    mapPastebinT,
-    runPastebinT,
-    PastebinError (..),
-    ScottyTE,
+    pastebin',
+    pastebinIO,
     PastebinEnv (..),
+    PastebinT,
+    PastebinError,
   )
 where
 
 import qualified Amazonka as AWS
 import qualified Amazonka.S3 as S3
 import Amazonka.S3.Lens
-import ClassyPrelude (fromByteVector)
-import Conduit (PrimMonad, ResourceT, runResourceT)
 import Control.Lens
 import Control.Lens.TH ()
 import Control.Monad.Catch
 import Control.Monad.Random
 import Control.Monad.Reader
-import Control.Monad.Trans.Resource (MonadUnliftIO, transResourceT)
+import qualified Control.Monad.Trans.Random as TR
+import Control.Monad.Trans.Resource
 import Data.Binary.Builder (fromByteString)
 import qualified Data.ByteString as B
+import qualified Data.ByteString.Lazy as BL
 import Data.Conduit
-import Data.Conduit.Combinators (mapM_E, repeatWhileM, vectorBuilder)
 import qualified Data.Conduit.Combinators as CC
 import qualified Data.Map as M
 import Data.String (fromString)
 import qualified Data.Text as T
-import Data.Text.Encoding (decodeUtf8)
+import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import qualified Data.Text.Lazy as TL
-import Network.HTTP.Types (HeaderName)
+import NeatInterpolation (text)
+import Network.HTTP.Types.Header
 import Network.HTTP.Types.Method
 import Network.HTTP.Types.Status
 import Network.Wai
+import Network.Wai.Parse
 import Web.Pastebin.Option
-import Web.Scotty.Trans
 
 data PastebinEnv = PastebinEnv
   { _pbOpts :: PastebinOptions,
@@ -48,104 +49,152 @@ data PastebinEnv = PastebinEnv
 
 makeLenses ''PastebinEnv
 
-type PastebinT m = ReaderT PastebinEnv (ResourceT m)
-
-type ScottyTE = ScottyT PastebinError
-
-type ActionTE = ActionT' PastebinError
-
-pastebin :: (MonadRandom m, MonadCatch m, MonadIO m) => PastebinT (ScottyTE m) ()
-pastebin = do
-  mapPastebinT (get (capture "/:key") . unActionT') (getObject True)
-  mapPastebinT (addroute HEAD (capture "/:key") . unActionT') (getObject False)
-  mapPastebinT (post (literal "/") . unActionT') postObject
-  mapPastebinT (put (capture "/:key") . unActionT') putObject
-  mapPastebinT (delete (capture "/:key") . unActionT') deleteObject
-
-mapPastebinT :: (m a -> n a) -> PastebinT m a -> PastebinT n a
-mapPastebinT = mapReaderT . transResourceT
-
-runPastebinT :: (MonadUnliftIO m) => PastebinT m a -> PastebinEnv -> m a
-runPastebinT p env = runResourceT $ runReaderT p env
-
 data PastebinError
-  = ErrorPlain String
-  | ErrorUnknownSize
+  = ErrorNotFound
+  | ErrorInvalidBodyType
+  | ErrorInvalidBody
+  deriving (Show)
 
-instance ScottyError PastebinError where
-  stringError = ErrorPlain
-  showError (ErrorPlain e) = TL.pack e
-  showError ErrorUnknownSize = "POST body size unknown"
+instance Exception PastebinError
 
-newtype ActionT' e m a = ActionT' {unActionT' :: ActionT e m a}
-  deriving (Functor, Applicative, Monad, MonadTrans, MonadIO, MonadThrow, MonadCatch)
+newtype PastebinT g m a = PastebinT {unPastebinT :: ReaderT PastebinEnv (RandT g (ResourceT m)) a}
+  deriving (Functor, Applicative, Monad, MonadRandom, MonadIO, MonadReader PastebinEnv)
 
-instance (MonadRandom m, ScottyError e) => MonadRandom (ActionT' e m) where
-  getRandomR = lift . getRandomR
-  getRandom = lift getRandom
-  getRandomRs = lift . getRandomRs
-  getRandoms = lift getRandoms
+-- , MonadResource, MonadThrow, MonadCatch
+runPastebinT :: (RandomGen g, MonadUnliftIO m) => PastebinEnv -> g -> PastebinT g m a -> m a
+runPastebinT env gen = runResourceT . flip evalRandT gen . flip runReaderT env . unPastebinT
 
-liftAction :: (Monad m, ScottyError e) => ActionT e m a -> PastebinT (ActionT' e m) a
-liftAction = lift . lift . ActionT'
+instance MonadTrans (PastebinT g) where
+  lift = PastebinT . lift . lift . lift
 
-getObject :: (MonadCatch m, MonadIO m, MonadRandom m) => Bool -> PastebinT (ActionTE m) ()
-getObject hasBody = do
+instance (MonadIO m) => MonadResource (PastebinT g m) where
+  liftResourceT = PastebinT . lift . lift . liftResourceT
+
+instance (MonadThrow m) => MonadThrow (PastebinT g m) where
+  throwM = lift . throwM
+
+instance (MonadCatch m) => MonadCatch (PastebinT g m) where
+  catch m f = PastebinT (ReaderT (\r -> unReaderT (unPastebinT m) r `catchRand` (flip runReaderT r . unPastebinT . f)))
+    where
+      catchRand = TR.liftCatch catch
+      unReaderT (ReaderT r) = r
+
+pastebinIO :: PastebinEnv -> Application
+pastebinIO env req respond = do
+  g <- initStdGen
+  runPastebinT env g (pastebin req respond)
+
+pastebin :: (MonadRandom m, MonadCatch m, MonadIO m, MonadReader PastebinEnv m, MonadResource m) => Request -> (Response -> IO ResponseReceived) -> m ResponseReceived
+pastebin req respond = catchIf (const True) (pastebin' req respond) (errorHandler req)
+  where
+    errorHandler r e = do
+      response <- errorResponse r e
+      liftIO (respond response)
+
+errorResponse :: (Monad m) => Request -> PastebinError -> m Response
+errorResponse _req ErrorNotFound = return (responseBuilder notFound404 [plainContentType] "not found\n")
+errorResponse _req ErrorInvalidBodyType = return (responseLBS badRequest400 [plainContentType] "bad request: require multipart/form-data\n")
+errorResponse _req ErrorInvalidBody = return (responseLBS badRequest400 [plainContentType] "bad request: require one and only one file parameter\n")
+
+plainContentType :: Header
+plainContentType = ("Content-Type", "text/plain; charset=utf-8")
+
+pastebin' :: (MonadRandom m, MonadCatch m, MonadIO m, MonadReader PastebinEnv m, MonadResource m) => Request -> (Response -> IO ResponseReceived) -> m ResponseReceived
+pastebin' req respond =
+  case (parseMethod (requestMethod req), pathInfo req) of
+    (Right GET, []) -> getHelp req respond
+    (Right GET, [key]) -> getObject req respond key
+    (Right POST, []) -> postObject req respond
+    (Right PUT, [key]) -> putObject req respond key
+    (Right DELETE, [key]) -> deleteObject req respond key
+    _ -> throwM ErrorNotFound
+
+getHelp :: (MonadReader PastebinEnv m, MonadIO m) => Request -> (Response -> IO ResponseReceived) -> m ResponseReceived
+getHelp req respond = do
+  opts <- asks (^. pbOpts)
+  let reqHeaders = M.fromList (requestHeaders req)
+      url = serviceUrl opts reqHeaders
+      response = responseLBS ok200 [plainContentType] (BL.fromStrict (encodeUtf8 (helpText url)))
+  liftIO (respond response)
+
+helpText :: T.Text -> T.Text
+helpText url =
+  [text|
+    # get help text
+    curl $url
+
+    # get an object
+    curl $url/key
+
+    # post an object
+    curl -F "c=@filename" $url
+
+    # post an object from stdin
+    cat filename | curl -F "c=@-" $url
+
+    # post an object with content type
+    curl -F "c=@filename;type=text/plain" $url
+
+    # put an object
+    curl -X PUT -F "c=@filename" $url/key
+
+    # delete an object
+    curl -X DELETE $url/key
+  |]
+
+getObject :: (MonadReader PastebinEnv m, MonadCatch m, MonadResource m, MonadIO m) => Request -> (Response -> IO ResponseReceived) -> T.Text -> m ResponseReceived
+getObject _req respond key = do
   bucket <- asks (^. pbOpts . optBucket)
   env <- asks (^. awsEnv)
-  key <- liftAction $ param "key"
   res' <- AWS.trying AWS._ServiceError $ AWS.send env (S3.newGetObject (S3.BucketName bucket) (S3.ObjectKey (bucket <> "/" <> key)))
   case res' of
-    Left err ->
-      if err ^. AWS.serviceStatus == notFound404
-        then liftAction $ status notFound404
-        else throwM (AWS.ServiceError err)
+    Left err -> if err ^. AWS.serviceStatus == notFound404 then throwM ErrorNotFound else throwM (AWS.ServiceError err)
     Right res -> do
-      liftAction $ setHeader "Content-Type" (maybe defaultContentTypeLazy TL.fromStrict (res ^. getObjectResponse_contentType))
-      let resBody = res ^. getObjectResponse_body
-      let streamBody = bodyToStream resBody
-      when hasBody $ liftAction $ stream streamBody
+      let contentType = encodeUtf8 (TL.toStrict (maybe defaultContentTypeLazy TL.fromStrict (res ^. getObjectResponse_contentType)))
+          resBody = res ^. getObjectResponse_body
+          streamBody = bodyToStream resBody
+          response = responseStream ok200 [("Content-Type", contentType)] streamBody
+      liftIO (respond response)
 
-postObject :: (MonadCatch m, MonadRandom m, MonadIO m) => PastebinT (ActionTE m) ()
-postObject = do
+postObject :: (MonadReader PastebinEnv m, MonadRandom m, MonadCatch m, MonadResource m, MonadIO m) => Request -> (Response -> IO ResponseReceived) -> m ResponseReceived
+postObject req respond = do
   opts <- asks (^. pbOpts)
   key <- freshKey
-  putObject' key
-  req <- liftAction request
+  putObject' req key
   let reqHeaders = M.fromList (requestHeaders req)
-  let resultUrl = createdUrl opts reqHeaders key
-  liftAction $ text (TL.fromStrict resultUrl <> "\n")
+      resultUrl = createdUrl opts reqHeaders key
+      response = responseLBS ok200 [plainContentType] (BL.fromStrict (encodeUtf8 (resultUrl <> "\n")))
+  liftIO (respond response)
 
-putObject :: (MonadCatch m, MonadRandom m, MonadIO m) => PastebinT (ActionTE m) ()
-putObject = do
-  key <- liftAction $ param "key"
-  putObject' key
+putObject :: (MonadReader PastebinEnv m, MonadThrow m, MonadResource m, MonadIO m) => Request -> (Response -> IO ResponseReceived) -> T.Text -> m ResponseReceived
+putObject req respond key = do
+  putObject' req key
+  liftIO (respond (responseBuilder ok200 [] mempty))
 
-putObject' :: (MonadCatch m, MonadRandom m, MonadIO m) => T.Text -> PastebinT (ActionTE m) ()
-putObject' key = do
+putObject' :: (MonadReader PastebinEnv m, MonadThrow m, MonadResource m, MonadIO m) => Request -> T.Text -> m ()
+putObject' req key = do
   bucket <- asks (^. pbOpts . optBucket)
-  req <- liftAction request
-  let reqHeaders = M.fromList (requestHeaders req)
-  let bodyLength = requestBodyLength req
-  case bodyLength of
-    ChunkedBody -> liftAction $ raiseStatus badRequest400 ErrorUnknownSize
-    KnownLength len' -> do
-      let len = fromIntegral len'
-      readBody <- liftAction bodyReader
-      let s3BodyStream = readerToConduit readBody .| reChunk (fromIntegral AWS.defaultChunkSize)
-      let s3ReqBody = AWS.unsafeChunkedBody AWS.defaultChunkSize len s3BodyStream
+  case getRequestBodyType req of
+    Just (Multipart _) -> do
+      (releaseKey, internalState) <- allocate createInternalState closeInternalState
+      let backEnd = tempFileBackEnd internalState
+      (bodyParams, bodyFiles) <- liftIO $ parseRequestBodyEx defaultParseRequestBodyOptions backEnd req
+      when (not (null bodyParams) || length bodyFiles /= 1) (throwM ErrorInvalidBody)
+      let (_, FileInfo _ contentType filePath) = bodyFiles !! 0
+      s3ReqBody <- AWS.chunkedFile AWS.defaultChunkSize filePath
       let s3ReqBasic = S3.newPutObject (S3.BucketName bucket) (S3.ObjectKey (bucket <> "/" <> key)) s3ReqBody
-      let contentType = convertContentType $ fmap decodeUtf8 (M.lookup "Content-Type" reqHeaders)
-      let s3Req = s3ReqBasic & putObject_contentType ?~ contentType
+          s3Req = s3ReqBasic & putObject_contentType ?~ (decodeUtf8 contentType)
       env <- asks (^. awsEnv)
       void $ AWS.send env s3Req
+      release releaseKey
+    _ -> throwM ErrorInvalidBody
 
-deleteObject :: (MonadIO m) => PastebinT (ActionTE m) ()
-deleteObject = do
+deleteObject :: (MonadReader PastebinEnv m, MonadResource m, MonadIO m) => Request -> (Response -> IO ResponseReceived) -> T.Text -> m ResponseReceived
+deleteObject _req respond key = do
   bucket <- asks (^. pbOpts . optBucket)
   env <- asks (^. awsEnv)
-  key <- liftAction $ param "key"
   void $ AWS.send env (S3.newDeleteObject (S3.BucketName bucket) (S3.ObjectKey (bucket <> "/" <> key)))
+  liftIO (respond (responseBuilder ok200 [] mempty))
 
 serviceUrl :: PastebinOptions -> M.Map HeaderName B.ByteString -> T.Text
 serviceUrl opts reqHeaders = case M.lookup "X-Forwarded-Host" reqHeaders of
@@ -161,33 +210,22 @@ createdUrl opts reqHeaders key = serviceUrl opts reqHeaders <> "/" <> key
 defaultContentType :: T.Text
 defaultContentType = "application/octet-stream"
 
-convertContentType :: Maybe T.Text -> T.Text
-convertContentType Nothing = defaultContentType
-convertContentType (Just "application/x-www-form-urlencoded") = defaultContentType
-convertContentType (Just t) = t
-
 defaultContentTypeLazy :: TL.Text
 defaultContentTypeLazy = TL.fromStrict defaultContentType
-
-readerToConduit :: MonadIO m => IO B.ByteString -> ConduitT i B.ByteString m ()
-readerToConduit bsReader = repeatWhileM (liftIO bsReader) (not . B.null)
 
 bodyToStream :: AWS.ResponseBody -> StreamingBody
 bodyToStream b send flush = AWS.sinkBody b (CC.map fromByteString .| CC.mapM_ (liftIO . send) >> liftIO flush)
 
-reChunk :: PrimMonad m => Int -> ConduitT B.ByteString B.ByteString m ()
-reChunk size = vectorBuilder size mapM_E .| CC.map fromByteVector
-
-freshKey :: (MonadCatch m, MonadRandom m, MonadIO m) => PastebinT (ActionTE m) T.Text
+freshKey :: (MonadReader PastebinEnv m, MonadRandom m, MonadCatch m, MonadResource m, MonadIO m) => m T.Text
 freshKey = do
   initialNameLen <- asks (^. pbOpts . optShortestNameLength)
   findAvailableKey initialNameLen
 
-findAvailableKey :: (MonadCatch m, MonadRandom m, MonadIO m) => Int -> PastebinT (ActionTE m) T.Text
+findAvailableKey :: (MonadReader PastebinEnv m, MonadRandom m, MonadCatch m, MonadResource m, MonadIO m) => Int -> m T.Text
 findAvailableKey len = do
   bucket <- asks (^. pbOpts . optBucket)
   env <- asks (^. awsEnv)
-  candidate <- lift . lift $ randomName len
+  candidate <- randomName len
   res <- AWS.trying AWS._ServiceError $ AWS.send env (S3.newHeadObject (S3.BucketName bucket) (S3.ObjectKey (bucket <> "/" <> candidate)))
   case res of
     Left err ->

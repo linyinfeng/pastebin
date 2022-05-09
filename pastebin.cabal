@@ -21,25 +21,24 @@ common haskell
 
 common dependencies
   build-depends:
-    , base
-    , scotty
-    , wai
-    , binary
-    , resourcet
     , amazonka
-    , amazonka-core
     , amazonka-s3
-    , http-types
-    , lens
-    , mtl
-    , text
+    , base
+    , binary
     , bytestring
     , conduit
-    , random
-    , MonadRandom
-    , exceptions
-    , classy-prelude
     , containers
+    , exceptions
+    , http-types
+    , lens
+    , MonadRandom
+    , mtl
+    , neat-interpolation
+    , resourcet
+    , text
+    , wai
+    , wai-extra
+    , warp
 
 common executable-flags
   ghc-options: -threaded -rtsopts -with-rtsopts=-N
@@ -52,6 +51,7 @@ library
   exposed-modules:
     Web.Pastebin
     Web.Pastebin.Option
+
   other-modules:   Paths_pastebin
   hs-source-dirs:  src
 
@@ -64,8 +64,7 @@ executable pastebin
   main-is:        Main.hs
   other-modules:  Paths_pastebin
   build-depends:
-      , pastebin
-      , optparse-applicative
-
+    , optparse-applicative
+    , pastebin
 
   hs-source-dirs: app

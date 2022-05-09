@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-cabal2nix . > pastebin.sh
+cabal2nix . > pastebin.nix
 
 pushd overlays
 
@@ -16,3 +16,5 @@ cabal2nix-amazonka lib/services/amazonka-sts amazonka-sts.nix
 cabal2nix-amazonka lib/services/amazonka-sso amazonka-sso.nix
 
 popd
+
+nix flake update

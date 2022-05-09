@@ -3,18 +3,17 @@
 module Main where
 
 import qualified Amazonka as AWS
-import Conduit
 import Control.Lens
-import Control.Monad.Catch
-import Control.Monad.Random
-import Control.Monad.Trans.Random as R
 import Data.Monoid
 import Data.String
+import qualified Network.Wai.Handler.Warp as Warp
+import Network.Wai.Middleware.Autohead
+import Network.Wai.Middleware.RequestLogger
 import qualified Options.Applicative as O
 import qualified System.IO as IO
+import Text.Printf
 import Web.Pastebin
 import Web.Pastebin.Option
-import Web.Scotty.Trans
 
 optionParser :: O.Parser PastebinOptions
 optionParser =
@@ -38,33 +37,25 @@ main = do
 
   awsLogger <- AWS.newLogger AWS.Info IO.stdout
   awsDiscover <- AWS.newEnv AWS.discover
-  let awsEnv =
+  let serviceOverride =
+        Dual $
+          Endo $
+            AWS.setEndpoint
+              (not (opts ^. optEndpointNoSSL))
+              (fromString (opts ^. optEndpointHost))
+              (opts ^. optEndpointPort)
+      awsEnv =
         awsDiscover
           { AWS.envLogger = awsLogger,
-            AWS.envOverride = serviceOverride opts
+            AWS.envOverride = serviceOverride
           }
+      env = PastebinEnv opts awsEnv
+      port = opts ^. optPort
+      middlewares =
+        [ logStdout,
+          autohead
+        ]
+      app = foldr ($) (pastebinIO env) middlewares
 
-  let env = PastebinEnv opts awsEnv
-  let adapter :: RandT' StdGen IO a -> IO a
-      adapter m = initStdGen >>= evalRandT' m
-  runPastebinT (mapPastebinT (scottyT (opts ^. optPort) adapter) pastebin) env
-  where
-    serviceOverride opts =
-      Dual $
-        Endo $
-          AWS.setEndpoint
-            (not (opts ^. optEndpointNoSSL))
-            (fromString (opts ^. optEndpointHost))
-            (opts ^. optEndpointPort)
-
-newtype RandT' g m a = RandT' {unRandT' :: RandT g m a}
-  deriving (Functor, Applicative, Monad, MonadTrans, MonadIO, MonadRandom)
-
-instance MonadThrow m => MonadThrow (RandT' g m) where
-  throwM = lift . throwM
-
-instance MonadCatch m => MonadCatch (RandT' g m) where
-  catch (RandT' r) f = RandT' $ R.liftCatch catch r (unRandT' . f)
-
-evalRandT' :: Monad m => RandT' g m a -> g -> m a
-evalRandT' (RandT' r) = evalRandT r
+  printf "listening on %d...\n" port
+  Warp.run port app
