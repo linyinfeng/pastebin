@@ -182,16 +182,22 @@ headersFromAWSResponse :: S3.GetObjectResponse -> [Header]
 headersFromAWSResponse res =
   catMaybes
     [ Just ("Content-Type", contentType),
+      fmap ("Content-Encoding",) contentEncoding,
+      fmap ("Content-Language",) contentLanguage,
+      fmap ("Content-Length",) contentLength,
+      fmap ("Content-Range",) contentRange,
       fmap ("Last-Modified",) lastModified,
       fmap ("ETag",) eTag,
-      fmap ("Content-Length",) contentLength,
       fmap ("Accept-Ranges",) acceptRanges
     ]
   where
     contentType = encodeUtf8 (TL.toStrict (maybe defaultContentTypeLazy TL.fromStrict (res ^. getObjectResponse_contentType)))
+    contentEncoding = fmap AWS.toBS (res ^. getObjectResponse_contentEncoding)
+    contentLanguage = fmap AWS.toBS (res ^. getObjectResponse_contentLanguage)
+    contentLength = fmap AWS.toBS (res ^. getObjectResponse_contentLength)
+    contentRange = fmap AWS.toBS (res ^. getObjectResponse_contentRange)
     lastModified = fmap AWS.toBS (res ^. getObjectResponse_lastModified)
     eTag = fmap AWS.toBS (res ^. getObjectResponse_eTag)
-    contentLength = fmap AWS.toBS (res ^. getObjectResponse_contentLength)
     acceptRanges = fmap AWS.toBS (res ^. getObjectResponse_acceptRanges)
 
 postObject :: (MonadReader PastebinEnv m, MonadRandom m, MonadCatch m, MonadResource m, MonadIO m) => Request -> (Response -> IO ResponseReceived) -> m ResponseReceived
