@@ -3,6 +3,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TupleSections #-}
 
 module Web.Pastebin
   ( pastebin,
@@ -30,6 +31,7 @@ import qualified Data.ByteString.Lazy as BL
 import Data.Conduit
 import qualified Data.Conduit.Combinators as CC
 import qualified Data.Map as M
+import Data.Maybe (catMaybes)
 import Data.String (fromString)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
@@ -153,11 +155,22 @@ getObject _req respond key = do
   case res' of
     Left err -> if err ^. AWS.serviceStatus == notFound404 then throwM ErrorNotFound else throwM (AWS.ServiceError err)
     Right res -> do
-      let contentType = encodeUtf8 (TL.toStrict (maybe defaultContentTypeLazy TL.fromStrict (res ^. getObjectResponse_contentType)))
-          resBody = res ^. getObjectResponse_body
+      let resBody = res ^. getObjectResponse_body
           streamBody = bodyToStream resBody
-          response = responseStream ok200 [("Content-Type", contentType)] streamBody
+          response = responseStream ok200 (headersFromAWSResponse res) streamBody
       liftIO (respond response)
+
+headersFromAWSResponse :: S3.GetObjectResponse -> [Header]
+headersFromAWSResponse res =
+  catMaybes
+    [ Just ("Content-Type", contentType),
+      fmap ("Last-Modified",) lastModified,
+      fmap ("ETag",) eTag
+    ]
+  where
+    contentType = encodeUtf8 (TL.toStrict (maybe defaultContentTypeLazy TL.fromStrict (res ^. getObjectResponse_contentType)))
+    lastModified = fmap AWS.toBS (res ^. getObjectResponse_lastModified)
+    eTag = fmap AWS.toBS (res ^. getObjectResponse_eTag)
 
 postObject :: (MonadReader PastebinEnv m, MonadRandom m, MonadCatch m, MonadResource m, MonadIO m) => Request -> (Response -> IO ResponseReceived) -> m ResponseReceived
 postObject req respond = do
