@@ -1,5 +1,5 @@
 { mkDerivation, amazonka, amazonka-s3, base, binary, bytestring
-, conduit, containers, exceptions, http-types, lens, lib
+, conduit, containers, exceptions, http-types, lens, lib, magic
 , MonadRandom, mtl, neat-interpolation, optparse-applicative
 , resourcet, text, wai, wai-extra, warp
 }:
@@ -11,12 +11,12 @@ mkDerivation {
   isExecutable = true;
   libraryHaskellDepends = [
     amazonka amazonka-s3 base binary bytestring conduit containers
-    exceptions http-types lens MonadRandom mtl neat-interpolation
+    exceptions http-types lens magic MonadRandom mtl neat-interpolation
     resourcet text wai wai-extra warp
   ];
   executableHaskellDepends = [
     amazonka amazonka-s3 base binary bytestring conduit containers
-    exceptions http-types lens MonadRandom mtl neat-interpolation
+    exceptions http-types lens magic MonadRandom mtl neat-interpolation
     optparse-applicative resourcet text wai wai-extra warp
   ];
   description = "A simple pastebin server";

@@ -12,6 +12,7 @@ mkShell {
     cabal-install
     ghc
     zlib
+    file # libmagic
     haskell-language-server
     ormolu
     haskellPackages.cabal-fmt

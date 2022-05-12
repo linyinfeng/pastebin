@@ -6,6 +6,8 @@ import qualified Amazonka as AWS
 import Control.Lens
 import Data.Monoid
 import Data.String
+import Magic.Init
+import Magic.Types
 import qualified Network.Wai.Handler.Warp as Warp
 import Network.Wai.Middleware.Autohead
 import Network.Wai.Middleware.RequestLogger
@@ -49,7 +51,9 @@ main = do
           { AWS.envLogger = awsLogger,
             AWS.envOverride = serviceOverride
           }
-      env = PastebinEnv opts awsEnv
+  magicInst <- magicOpen [MagicMime] -- output both mime type and mime encoding
+  magicLoadDefault magicInst
+  let env = PastebinEnv opts awsEnv magicInst
       port = opts ^. optPort
       middlewares =
         [ logStdout,

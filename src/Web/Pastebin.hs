@@ -34,7 +34,9 @@ import Data.String (fromString)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import qualified Data.Text.Lazy as TL
-import NeatInterpolation (text)
+import Magic.Operations
+import Magic.Types
+import NeatInterpolation (trimming)
 import Network.HTTP.Types.Header
 import Network.HTTP.Types.Method
 import Network.HTTP.Types.Status
@@ -44,7 +46,8 @@ import Web.Pastebin.Option
 
 data PastebinEnv = PastebinEnv
   { _pbOpts :: PastebinOptions,
-    _awsEnv :: AWS.Env
+    _awsEnv :: AWS.Env,
+    _magic :: Magic
   }
 
 makeLenses ''PastebinEnv
@@ -114,12 +117,12 @@ getHelp req respond = do
   opts <- asks (^. pbOpts)
   let reqHeaders = M.fromList (requestHeaders req)
       url = serviceUrl opts reqHeaders
-      response = responseLBS ok200 [plainContentType] (BL.fromStrict (encodeUtf8 (helpText url)))
+      response = responseLBS ok200 [plainContentType] (BL.fromStrict (encodeUtf8 (helpText url <> "\n")))
   liftIO (respond response)
 
 helpText :: T.Text -> T.Text
 helpText url =
-  [text|
+  [trimming|
     # get help text
     curl $url
 
@@ -132,8 +135,8 @@ helpText url =
     # post an object from stdin
     cat filename | curl -F "c=@-" $url
 
-    # post an object with content type
-    curl -F "c=@filename;type=text/plain" $url
+    # post an object with explicit content type
+    curl -F "c=@filename;type=text/plain; charset=utf-8" $url
 
     # put an object
     curl -X PUT -F "c=@filename" $url/key
@@ -180,14 +183,25 @@ putObject' req key = do
       let backEnd = tempFileBackEnd internalState
       (bodyParams, bodyFiles) <- liftIO $ parseRequestBodyEx defaultParseRequestBodyOptions backEnd req
       when (not (null bodyParams) || length bodyFiles /= 1) (throwM ErrorInvalidBody)
-      let (_, FileInfo _ contentType filePath) = bodyFiles !! 0
+      let (_, FileInfo _ providedContentType' filePath) = head bodyFiles
+          providedContentType = decodeUtf8 providedContentType'
+      contentType <-
+        if providedContentType == defaultContentType
+          then getContentTypeFromMagic filePath
+          else return providedContentType
       s3ReqBody <- AWS.chunkedFile AWS.defaultChunkSize filePath
       let s3ReqBasic = S3.newPutObject (S3.BucketName bucket) (S3.ObjectKey (bucket <> "/" <> key)) s3ReqBody
-          s3Req = s3ReqBasic & putObject_contentType ?~ (decodeUtf8 contentType)
+          s3Req = s3ReqBasic & putObject_contentType ?~ contentType
       env <- asks (^. awsEnv)
       void $ AWS.send env s3Req
       release releaseKey
     _ -> throwM ErrorInvalidBody
+
+getContentTypeFromMagic :: (MonadReader PastebinEnv m, MonadIO m) => FilePath -> m T.Text
+getContentTypeFromMagic file = do
+  magicInst <- asks (^. magic)
+  result <- liftIO $ magicFile magicInst file
+  return (T.pack result)
 
 deleteObject :: (MonadReader PastebinEnv m, MonadResource m, MonadIO m) => Request -> (Response -> IO ResponseReceived) -> T.Text -> m ResponseReceived
 deleteObject _req respond key = do
