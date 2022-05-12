@@ -16,6 +16,7 @@ module Web.Pastebin
 where
 
 import qualified Amazonka as AWS
+import qualified Amazonka.Data.Time as Time
 import qualified Amazonka.S3 as S3
 import Amazonka.S3.Lens
 import Control.Lens
@@ -30,6 +31,7 @@ import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as BL
 import Data.Conduit
 import qualified Data.Conduit.Combinators as CC
+import Data.Either.Combinators (rightToMaybe)
 import qualified Data.Map as M
 import Data.Maybe (catMaybes)
 import Data.String (fromString)
@@ -58,6 +60,7 @@ data PastebinError
   = ErrorNotFound
   | ErrorInvalidBodyType
   | ErrorInvalidBody
+  | ErrorInvalidAWSGetObjectResponse S3.GetObjectResponse
   deriving (Show)
 
 instance Exception PastebinError
@@ -96,10 +99,11 @@ pastebin req respond = catchIf (const True) (pastebin' req respond) (errorHandle
       response <- errorResponse r e
       liftIO (respond response)
 
-errorResponse :: (Monad m) => Request -> PastebinError -> m Response
+errorResponse :: (MonadThrow m) => Request -> PastebinError -> m Response
 errorResponse _req ErrorNotFound = return (responseBuilder notFound404 [plainContentType] "not found\n")
 errorResponse _req ErrorInvalidBodyType = return (responseLBS badRequest400 [plainContentType] "bad request: require multipart/form-data\n")
 errorResponse _req ErrorInvalidBody = return (responseLBS badRequest400 [plainContentType] "bad request: require one and only one file parameter\n")
+errorResponse _req other = throwM other
 
 plainContentType :: Header
 plainContentType = ("Content-Type", "text/plain; charset=utf-8")
@@ -148,16 +152,27 @@ helpText url =
   |]
 
 getObject :: (MonadReader PastebinEnv m, MonadCatch m, MonadResource m, MonadIO m) => Request -> (Response -> IO ResponseReceived) -> T.Text -> m ResponseReceived
-getObject _req respond key = do
+getObject req respond key = do
   bucket <- asks (^. pbOpts . optBucket)
   env <- asks (^. awsEnv)
-  res' <- AWS.trying AWS._ServiceError $ AWS.send env (S3.newGetObject (S3.BucketName bucket) (S3.ObjectKey (bucket <> "/" <> key)))
+  let reqHeaders = M.fromList (requestHeaders req)
+      ifNoneMatch = fmap decodeUtf8 (M.lookup "If-None-Match" reqHeaders)
+      ifModifiedSince = (M.lookup "If-ModifiedSince" reqHeaders >>= rightToMaybe . AWS.fromText . decodeUtf8) :: Maybe Time.ISO8601
+      s3Req =
+        S3.newGetObject (S3.BucketName bucket) (S3.ObjectKey (bucket <> "/" <> key))
+          & getObject_ifNoneMatch .~ ifNoneMatch
+          & getObject_ifModifiedSince .~ fmap (^. Time._Time) ifModifiedSince
+  res' <- AWS.trying AWS._ServiceError $ AWS.send env s3Req
   case res' of
     Left err -> if err ^. AWS.serviceStatus == notFound404 then throwM ErrorNotFound else throwM (AWS.ServiceError err)
     Right res -> do
+      resStatus <- case res ^. getObjectResponse_httpStatus of
+        200 -> return ok200
+        304 -> return notModified304
+        _ -> throwM (ErrorInvalidAWSGetObjectResponse res)
       let resBody = res ^. getObjectResponse_body
           streamBody = bodyToStream resBody
-          response = responseStream ok200 (headersFromAWSResponse res) streamBody
+          response = responseStream resStatus (headersFromAWSResponse res) streamBody
       liftIO (respond response)
 
 headersFromAWSResponse :: S3.GetObjectResponse -> [Header]
@@ -165,12 +180,14 @@ headersFromAWSResponse res =
   catMaybes
     [ Just ("Content-Type", contentType),
       fmap ("Last-Modified",) lastModified,
-      fmap ("ETag",) eTag
+      fmap ("ETag",) eTag,
+      fmap ("Content-Length",) contentLength
     ]
   where
     contentType = encodeUtf8 (TL.toStrict (maybe defaultContentTypeLazy TL.fromStrict (res ^. getObjectResponse_contentType)))
     lastModified = fmap AWS.toBS (res ^. getObjectResponse_lastModified)
     eTag = fmap AWS.toBS (res ^. getObjectResponse_eTag)
+    contentLength = fmap AWS.toBS (res ^. getObjectResponse_contentLength)
 
 postObject :: (MonadReader PastebinEnv m, MonadRandom m, MonadCatch m, MonadResource m, MonadIO m) => Request -> (Response -> IO ResponseReceived) -> m ResponseReceived
 postObject req respond = do

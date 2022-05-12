@@ -22,12 +22,14 @@ common haskell
 common dependencies
   build-depends:
     , amazonka
+    , amazonka-core
     , amazonka-s3
     , base
     , binary
     , bytestring
     , conduit
     , containers
+    , either
     , exceptions
     , http-types
     , lens
