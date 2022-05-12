@@ -158,16 +158,19 @@ getObject req respond key = do
   let reqHeaders = M.fromList (requestHeaders req)
       ifNoneMatch = fmap decodeUtf8 (M.lookup "If-None-Match" reqHeaders)
       ifModifiedSince = (M.lookup "If-ModifiedSince" reqHeaders >>= rightToMaybe . AWS.fromText . decodeUtf8) :: Maybe Time.ISO8601
+      range = fmap decodeUtf8 (M.lookup "Range" reqHeaders)
       s3Req =
         S3.newGetObject (S3.BucketName bucket) (S3.ObjectKey (bucket <> "/" <> key))
           & getObject_ifNoneMatch .~ ifNoneMatch
           & getObject_ifModifiedSince .~ fmap (^. Time._Time) ifModifiedSince
+          & getObject_range .~ range
   res' <- AWS.trying AWS._ServiceError $ AWS.send env s3Req
   case res' of
     Left err -> if err ^. AWS.serviceStatus == notFound404 then throwM ErrorNotFound else throwM (AWS.ServiceError err)
     Right res -> do
       resStatus <- case res ^. getObjectResponse_httpStatus of
         200 -> return ok200
+        206 -> return partialContent206
         304 -> return notModified304
         _ -> throwM (ErrorInvalidAWSGetObjectResponse res)
       let resBody = res ^. getObjectResponse_body
@@ -181,13 +184,15 @@ headersFromAWSResponse res =
     [ Just ("Content-Type", contentType),
       fmap ("Last-Modified",) lastModified,
       fmap ("ETag",) eTag,
-      fmap ("Content-Length",) contentLength
+      fmap ("Content-Length",) contentLength,
+      fmap ("Accept-Ranges",) acceptRanges
     ]
   where
     contentType = encodeUtf8 (TL.toStrict (maybe defaultContentTypeLazy TL.fromStrict (res ^. getObjectResponse_contentType)))
     lastModified = fmap AWS.toBS (res ^. getObjectResponse_lastModified)
     eTag = fmap AWS.toBS (res ^. getObjectResponse_eTag)
     contentLength = fmap AWS.toBS (res ^. getObjectResponse_contentLength)
+    acceptRanges = fmap AWS.toBS (res ^. getObjectResponse_acceptRanges)
 
 postObject :: (MonadReader PastebinEnv m, MonadRandom m, MonadCatch m, MonadResource m, MonadIO m) => Request -> (Response -> IO ResponseReceived) -> m ResponseReceived
 postObject req respond = do
