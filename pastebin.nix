@@ -22,4 +22,5 @@ mkDerivation {
   ];
   description = "A simple pastebin server";
   license = lib.licenses.mit;
+  mainProgram = "pastebin";
 }

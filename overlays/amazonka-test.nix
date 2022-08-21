@@ -9,8 +9,8 @@ mkDerivation {
   version = "2.0";
   src = fetchgit {
     url = "https://github.com/brendanhay/amazonka.git";
-    sha256 = "1rg83628v6k41ckrz1ivnnkcdq81j6pk0l8nhkwf77ipr9l0i5jk";
-    rev = "27322ea0db68712e1c331be4124080144c975750";
+    sha256 = "05rxii4kkhp56xbgbylyj37c58awrf8v10qx8k1cp3ml9blp67ds";
+    rev = "d3387129882737add0a30fe2119b71da1afaee4e";
     fetchSubmodules = true;
   };
   postUnpack = "sourceRoot+=/lib/amazonka-test; echo source root reset to $sourceRoot";
