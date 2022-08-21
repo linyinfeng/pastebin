@@ -230,7 +230,7 @@ putObject' req key = do
         if providedContentType == defaultContentType
           then getContentTypeFromMagic filePath
           else return providedContentType
-      s3ReqBody <- AWS.chunkedFile AWS.defaultChunkSize filePath
+      s3ReqBody <- AWS.Hashed <$> AWS.hashedFile filePath
       let s3ReqBasic = S3.newPutObject (S3.BucketName bucket) (S3.ObjectKey (bucket <> "/" <> key)) s3ReqBody
           s3Req = s3ReqBasic & putObject_contentType ?~ contentType
       env <- asks (^. awsEnv)
