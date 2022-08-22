@@ -60,6 +60,7 @@ data PastebinError
   = ErrorNotFound
   | ErrorInvalidBodyType
   | ErrorInvalidBody
+  | ErrorInvalidKey
   | ErrorInvalidAWSGetObjectResponse S3.GetObjectResponse
   deriving (Show)
 
@@ -103,6 +104,7 @@ errorResponse :: (MonadThrow m) => Request -> PastebinError -> m Response
 errorResponse _req ErrorNotFound = return (responseBuilder notFound404 [plainContentType] "not found\n")
 errorResponse _req ErrorInvalidBodyType = return (responseLBS badRequest400 [plainContentType] "bad request: require multipart/form-data\n")
 errorResponse _req ErrorInvalidBody = return (responseLBS badRequest400 [plainContentType] "bad request: require one and only one file parameter\n")
+errorResponse _req ErrorInvalidKey = return (responseLBS badRequest400 [plainContentType] "bad request: invalid key\n")
 errorResponse _req other = throwM other
 
 plainContentType :: Header
@@ -212,6 +214,7 @@ postObject req respond = do
 
 putObject :: (MonadReader PastebinEnv m, MonadThrow m, MonadResource m, MonadIO m) => Request -> (Response -> IO ResponseReceived) -> T.Text -> m ResponseReceived
 putObject req respond key = do
+  when (not (validName key)) (throwM ErrorInvalidKey)
   putObject' req key
   liftIO (respond (responseBuilder ok200 [] mempty))
 
@@ -297,3 +300,9 @@ randomChar = do
   upperCase <- getRandom
   let range = if upperCase then ('A', 'Z') else ('a', 'z')
   getRandomR range
+
+validName :: T.Text -> Bool
+validName = T.all validChar
+
+validChar :: Char -> Bool
+validChar c = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
