@@ -1,3 +1,0 @@
-{
-  haskellPackages = import ./haskellPackages.nix;
-}

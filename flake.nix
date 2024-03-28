@@ -1,20 +1,52 @@
 {
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-  inputs.flake-utils-plus.url = "github:gytis-ivaskevicius/flake-utils-plus";
+  inputs = {
+    flake-parts.url = "github:hercules-ci/flake-parts";
+    flake-parts.inputs.nixpkgs-lib.follows = "nixpkgs";
 
-  outputs = { self, nixpkgs, flake-utils-plus }@inputs:
-    let
-      utils = flake-utils-plus.lib;
-      lib = nixpkgs.lib;
-    in
-    utils.mkFlake {
-      inherit self inputs;
-      sharedOverlays = lib.attrValues self.overlays;
-      overlays = import ./overlays;
-      outputsBuilder = channels:
-        let pkgs = channels.nixpkgs;
-        in {
-          packages.default = pkgs.callPackage ./default.nix { };
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
+
+    treefmt-nix.url = "github:numtide/treefmt-nix";
+    treefmt-nix.inputs.nixpkgs.follows = "nixpkgs";
+  };
+
+  outputs =
+    { flake-parts, ... }@inputs:
+    flake-parts.lib.mkFlake { inherit inputs; } {
+      systems = [
+        "x86_64-linux"
+        "aarch64-linux"
+      ];
+      imports = [
+        inputs.flake-parts.flakeModules.easyOverlay
+        inputs.treefmt-nix.flakeModule
+      ];
+      perSystem =
+        {
+          config,
+          self',
+          pkgs,
+          system,
+          ...
+        }:
+        {
+          packages = {
+            pastebin = pkgs.callPackage ./. { };
+            default = self'.packages.pastebin;
+          };
+          overlayAttrs = {
+            inherit (self'.packages) pastebin;
+          };
+          checks = {
+            inherit (self'.packages) pastebin;
+          };
+          treefmt = {
+            projectRootFile = "flake.nix";
+            programs = {
+              nixfmt-rfc-style.enable = true;
+              ormolu.enable = true;
+              prettier.enable = true;
+            };
+          };
           devShells.default = pkgs.callPackage ./shell.nix { };
         };
     };

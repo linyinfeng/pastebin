@@ -1,13 +1,12 @@
-{ pkgs ? import <nixpkgs> { },
-  pastebin ? import ./default.nix { inherit pkgs; }
+{
+  pkgs ? import <nixpkgs> { },
+  pastebin ? import ./default.nix { inherit pkgs; },
 }:
 
 with pkgs;
 
 mkShell {
-  inputsFrom = [
-    pastebin
-  ];
+  inputsFrom = [ pastebin ];
   packages = [
     cabal-install
     ghc
@@ -16,7 +15,6 @@ mkShell {
     haskell-language-server
     ormolu
     haskellPackages.cabal-fmt
-    haskellPackages.prune-juice
     fd
   ];
 }

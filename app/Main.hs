@@ -40,16 +40,14 @@ main = do
   awsLogger <- AWS.newLogger AWS.Info IO.stdout
   awsDiscover <- AWS.newEnv AWS.discover
   let serviceOverride =
-        Dual $
-          Endo $
-            AWS.setEndpoint
-              (not (opts ^. optEndpointNoSSL))
-              (fromString (opts ^. optEndpointHost))
-              (opts ^. optEndpointPort)
+        AWS.setEndpoint
+          (not (opts ^. optEndpointNoSSL))
+          (fromString (opts ^. optEndpointHost))
+          (opts ^. optEndpointPort)
       awsEnv =
         awsDiscover
-          { AWS.envLogger = awsLogger,
-            AWS.envOverride = serviceOverride
+          { AWS.logger = awsLogger,
+            AWS.overrides = serviceOverride
           }
   magicInst <- magicOpen [MagicMime] -- output both mime type and mime encoding
   magicLoadDefault magicInst

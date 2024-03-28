@@ -16,6 +16,8 @@ module Web.Pastebin
 where
 
 import qualified Amazonka as AWS
+import qualified Amazonka.Data.ByteString as ABS
+import qualified Amazonka.Data.Text as AT
 import qualified Amazonka.Data.Time as Time
 import qualified Amazonka.S3 as S3
 import Amazonka.S3.Lens
@@ -159,16 +161,16 @@ getObject req respond key = do
   env <- asks (^. awsEnv)
   let reqHeaders = M.fromList (requestHeaders req)
       ifNoneMatch = fmap decodeUtf8 (M.lookup "If-None-Match" reqHeaders)
-      ifModifiedSince = (M.lookup "If-ModifiedSince" reqHeaders >>= rightToMaybe . AWS.fromText . decodeUtf8) :: Maybe Time.ISO8601
+      ifModifiedSince = (M.lookup "If-ModifiedSince" reqHeaders >>= rightToMaybe . AT.fromText . decodeUtf8) :: Maybe Time.ISO8601
       range = fmap decodeUtf8 (M.lookup "Range" reqHeaders)
       s3Req =
         S3.newGetObject (S3.BucketName bucket) (S3.ObjectKey (bucket <> "/" <> key))
           & getObject_ifNoneMatch .~ ifNoneMatch
           & getObject_ifModifiedSince .~ fmap (^. Time._Time) ifModifiedSince
           & getObject_range .~ range
-  res' <- AWS.trying AWS._ServiceError $ AWS.send env s3Req
+  res' <- AWS.trying _S3NoSuchKeyError $ AWS.send env s3Req
   case res' of
-    Left err -> if err ^. AWS.serviceStatus == notFound404 then throwM ErrorNotFound else throwM (AWS.ServiceError err)
+    Left _notFoundError -> throwM ErrorNotFound
     Right res -> do
       resStatus <- case res ^. getObjectResponse_httpStatus of
         200 -> return ok200
@@ -179,6 +181,9 @@ getObject req respond key = do
           streamBody = bodyToStream resBody
           response = responseStream resStatus (headersFromAWSResponse res) streamBody
       liftIO (respond response)
+
+_S3NoSuchKeyError :: (AWS.AsError a) => Fold a AWS.ServiceError
+_S3NoSuchKeyError = AWS._MatchServiceError S3.defaultService "NoSuchKey"
 
 headersFromAWSResponse :: S3.GetObjectResponse -> [Header]
 headersFromAWSResponse res =
@@ -194,13 +199,13 @@ headersFromAWSResponse res =
     ]
   where
     contentType = encodeUtf8 (TL.toStrict (maybe defaultContentTypeLazy TL.fromStrict (res ^. getObjectResponse_contentType)))
-    contentEncoding = fmap AWS.toBS (res ^. getObjectResponse_contentEncoding)
-    contentLanguage = fmap AWS.toBS (res ^. getObjectResponse_contentLanguage)
-    contentLength = fmap AWS.toBS (res ^. getObjectResponse_contentLength)
-    contentRange = fmap AWS.toBS (res ^. getObjectResponse_contentRange)
-    lastModified = fmap AWS.toBS (res ^. getObjectResponse_lastModified)
-    eTag = fmap AWS.toBS (res ^. getObjectResponse_eTag)
-    acceptRanges = fmap AWS.toBS (res ^. getObjectResponse_acceptRanges)
+    contentEncoding = fmap ABS.toBS (res ^. getObjectResponse_contentEncoding)
+    contentLanguage = fmap ABS.toBS (res ^. getObjectResponse_contentLanguage)
+    contentLength = fmap ABS.toBS (res ^. getObjectResponse_contentLength)
+    contentRange = fmap ABS.toBS (res ^. getObjectResponse_contentRange)
+    lastModified = fmap ABS.toBS (res ^. getObjectResponse_lastModified)
+    eTag = fmap ABS.toBS (res ^. getObjectResponse_eTag)
+    acceptRanges = fmap ABS.toBS (res ^. getObjectResponse_acceptRanges)
 
 postObject :: (MonadReader PastebinEnv m, MonadRandom m, MonadCatch m, MonadResource m, MonadIO m) => Request -> (Response -> IO ResponseReceived) -> m ResponseReceived
 postObject req respond = do
@@ -284,12 +289,9 @@ findAvailableKey len = do
   bucket <- asks (^. pbOpts . optBucket)
   env <- asks (^. awsEnv)
   candidate <- randomName len
-  res <- AWS.trying AWS._ServiceError $ AWS.send env (S3.newHeadObject (S3.BucketName bucket) (S3.ObjectKey (bucket <> "/" <> candidate)))
+  res <- AWS.trying _S3NoSuchKeyError $ AWS.send env (S3.newHeadObject (S3.BucketName bucket) (S3.ObjectKey (bucket <> "/" <> candidate)))
   case res of
-    Left err ->
-      if err ^. AWS.serviceStatus == notFound404
-        then return candidate
-        else throwM (AWS.ServiceError err)
+    Left _noSuchKey -> return candidate
     Right _ -> findAvailableKey (len + 1)
 
 randomName :: (MonadRandom m) => Int -> m T.Text
