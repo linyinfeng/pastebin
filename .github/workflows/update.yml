@@ -32,14 +32,15 @@ jobs:
     - name: Nix flake update
       run: |
         nix flake update --commit-lock-file
-    - name: Cargo update
+    - name: Cabal2nix
       run: |
-        nix develop --command cargo update
+        nix shell nixpkgs#cabal2nix --command cabal2nix . > pastebin.nix
+        nix fmt
         if [ -z $(git status --porcelain) ]; then
           echo "clean, skip..."
         else
           git add --all
-          git commit --message "Cargo update"
+          git commit --message "Update pastebin.nix with cabal2nix"
         fi
     - name: Nix flake check
       run: |
