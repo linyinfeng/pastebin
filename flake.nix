@@ -44,6 +44,7 @@
             programs = {
               nixfmt-rfc-style.enable = true;
               ormolu.enable = true;
+              cabal-fmt.enable = true;
               prettier.enable = true;
             };
           };

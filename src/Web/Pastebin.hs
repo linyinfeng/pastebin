@@ -168,9 +168,9 @@ getObject req respond key = do
           & getObject_ifNoneMatch .~ ifNoneMatch
           & getObject_ifModifiedSince .~ fmap (^. Time._Time) ifModifiedSince
           & getObject_range .~ range
-  res' <- AWS.trying _S3NoSuchKeyError $ AWS.send env s3Req
+  res' <- AWS.trying _NotFoundError $ AWS.send env s3Req
   case res' of
-    Left _notFoundError -> throwM ErrorNotFound
+    Left _notFound -> throwM ErrorNotFound
     Right res -> do
       resStatus <- case res ^. getObjectResponse_httpStatus of
         200 -> return ok200
@@ -182,8 +182,8 @@ getObject req respond key = do
           response = responseStream resStatus (headersFromAWSResponse res) streamBody
       liftIO (respond response)
 
-_S3NoSuchKeyError :: (AWS.AsError a) => Fold a AWS.ServiceError
-_S3NoSuchKeyError = AWS._MatchServiceError S3.defaultService "NoSuchKey"
+_NotFoundError :: (AWS.AsError a) => Fold a AWS.ServiceError
+_NotFoundError = AWS._MatchServiceError S3.defaultService "Not Found"
 
 headersFromAWSResponse :: S3.GetObjectResponse -> [Header]
 headersFromAWSResponse res =
@@ -289,9 +289,9 @@ findAvailableKey len = do
   bucket <- asks (^. pbOpts . optBucket)
   env <- asks (^. awsEnv)
   candidate <- randomName len
-  res <- AWS.trying _S3NoSuchKeyError $ AWS.send env (S3.newHeadObject (S3.BucketName bucket) (S3.ObjectKey (bucket <> "/" <> candidate)))
+  res <- AWS.trying _NotFoundError $ AWS.send env (S3.newHeadObject (S3.BucketName bucket) (S3.ObjectKey (bucket <> "/" <> candidate)))
   case res of
-    Left _noSuchKey -> return candidate
+    Left _notFound -> return candidate
     Right _ -> findAvailableKey (len + 1)
 
 randomName :: (MonadRandom m) => Int -> m T.Text
