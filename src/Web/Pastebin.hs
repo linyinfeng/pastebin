@@ -21,6 +21,7 @@ import qualified Amazonka.Data.Text as AT
 import qualified Amazonka.Data.Time as Time
 import qualified Amazonka.S3 as S3
 import Amazonka.S3.Lens
+import Control.Exception.Lens (trying)
 import Control.Lens
 import Control.Lens.TH ()
 import Control.Monad.Catch
@@ -168,7 +169,7 @@ getObject req respond key = do
           & getObject_ifNoneMatch .~ ifNoneMatch
           & getObject_ifModifiedSince .~ fmap (^. Time._Time) ifModifiedSince
           & getObject_range .~ range
-  res' <- AWS.trying _NotFoundError $ AWS.send env s3Req
+  res' <- trying _NotFoundError $ AWS.send env s3Req
   case res' of
     Left _notFound -> throwM ErrorNotFound
     Right res -> do
@@ -231,9 +232,11 @@ putObject' req key = do
       (releaseKey, internalState) <- allocate createInternalState closeInternalState
       let backEnd = tempFileBackEnd internalState
       (bodyParams, bodyFiles) <- liftIO $ parseRequestBodyEx defaultParseRequestBodyOptions backEnd req
-      when (not (null bodyParams) || length bodyFiles /= 1) (throwM ErrorInvalidBody)
-      let (_, FileInfo _ providedContentType' filePath) = head bodyFiles
-          providedContentType = decodeUtf8 providedContentType'
+      when (not (null bodyParams)) (throwM ErrorInvalidBody)
+      (_, FileInfo _ providedContentType' filePath) <- case bodyFiles of
+        [file] -> return file
+        _ -> throwM ErrorInvalidBody
+      let providedContentType = decodeUtf8 providedContentType'
       contentType <-
         if providedContentType == defaultContentType
           then getContentTypeFromMagic filePath
@@ -289,7 +292,7 @@ findAvailableKey len = do
   bucket <- asks (^. pbOpts . optBucket)
   env <- asks (^. awsEnv)
   candidate <- randomName len
-  res <- AWS.trying _NotFoundError $ AWS.send env (S3.newHeadObject (S3.BucketName bucket) (S3.ObjectKey (bucket <> "/" <> candidate)))
+  res <- trying _NotFoundError $ AWS.send env (S3.newHeadObject (S3.BucketName bucket) (S3.ObjectKey (bucket <> "/" <> candidate)))
   case res of
     Left _notFound -> return candidate
     Right _ -> findAvailableKey (len + 1)
