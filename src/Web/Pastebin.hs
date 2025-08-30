@@ -165,7 +165,7 @@ getObject req respond key = do
       ifModifiedSince = (M.lookup "If-ModifiedSince" reqHeaders >>= rightToMaybe . AT.fromText . decodeUtf8) :: Maybe Time.ISO8601
       range = fmap decodeUtf8 (M.lookup "Range" reqHeaders)
       s3Req =
-        S3.newGetObject (S3.BucketName bucket) (S3.ObjectKey (bucket <> "/" <> key))
+        S3.newGetObject (S3.BucketName bucket) (S3.ObjectKey key)
           & getObject_ifNoneMatch .~ ifNoneMatch
           & getObject_ifModifiedSince .~ fmap (^. Time._Time) ifModifiedSince
           & getObject_range .~ range
@@ -242,7 +242,7 @@ putObject' req key = do
           then getContentTypeFromMagic filePath
           else return providedContentType
       s3ReqBody <- AWS.Hashed <$> AWS.hashedFile filePath
-      let s3ReqBasic = S3.newPutObject (S3.BucketName bucket) (S3.ObjectKey (bucket <> "/" <> key)) s3ReqBody
+      let s3ReqBasic = S3.newPutObject (S3.BucketName bucket) (S3.ObjectKey key) s3ReqBody
           s3Req = s3ReqBasic & putObject_contentType ?~ contentType
       env <- asks (^. awsEnv)
       void $ AWS.send env s3Req
@@ -259,7 +259,7 @@ deleteObject :: (MonadReader PastebinEnv m, MonadResource m, MonadIO m) => Reque
 deleteObject _req respond key = do
   bucket <- asks (^. pbOpts . optBucket)
   env <- asks (^. awsEnv)
-  void $ AWS.send env (S3.newDeleteObject (S3.BucketName bucket) (S3.ObjectKey (bucket <> "/" <> key)))
+  void $ AWS.send env (S3.newDeleteObject (S3.BucketName bucket) (S3.ObjectKey key))
   liftIO (respond (responseBuilder ok200 [] mempty))
 
 serviceUrl :: PastebinOptions -> M.Map HeaderName B.ByteString -> T.Text
@@ -292,7 +292,7 @@ findAvailableKey len = do
   bucket <- asks (^. pbOpts . optBucket)
   env <- asks (^. awsEnv)
   candidate <- randomName len
-  res <- trying _NotFoundError $ AWS.send env (S3.newHeadObject (S3.BucketName bucket) (S3.ObjectKey (bucket <> "/" <> candidate)))
+  res <- trying _NotFoundError $ AWS.send env (S3.newHeadObject (S3.BucketName bucket) (S3.ObjectKey candidate))
   case res of
     Left _notFound -> return candidate
     Right _ -> findAvailableKey (len + 1)
