@@ -78,6 +78,6 @@ mkDerivation {
     warp
   ];
   description = "A simple pastebin server";
-  license = lib.licenses.mit;
+  license = lib.licensesSpdx."MIT";
   mainProgram = "pastebin";
 }
